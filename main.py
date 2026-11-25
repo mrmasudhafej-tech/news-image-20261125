@@ -1,60 +1,67 @@
-#!/usr/bin/env python3
-"""Copy the finished front page for 25 November 2026 to the output dir.
+"""Copy the rendered front page to the make.fun output location.
 
-The image itself lives in this repository as ``entry.png``. It was drawn
-for this competition day by ``render.py`` (Pillow, run locally while
-building the entry). This program does no drawing and needs no network:
-it checks the stored PNG, then writes the same bytes to
-``/output/entry.png`` (or to ``$MAKEFUN_OUTPUT_DIR`` when set), so the
-grader's two runs always produce identical output. Standard library only.
-The PNG is validated before it is copied, so a damaged or wrong-sized
-stored image fails loudly instead of producing a bad entry.
+Standard library only. The PNG beside this file is checked for its
+signature, its IHDR dimensions and its size, then copied byte for
+byte so the delivered file is identical to the rendered one.
 """
-
 import hashlib
 import os
 import struct
 import sys
 from pathlib import Path
 
-IMAGE_NAME = "entry.png"
-MAX_BYTES = 1048576
+MAX_BYTES = 1_048_576
+WANTED_W = 1024
+WANTED_H = 1024
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
-def choose_output_dir() -> Path:
+def read_source():
+    here = Path(__file__).resolve().parent
+    return here / "entry.png"
+
+
+def png_dimensions(blob):
+    """Return (width, height) from the IHDR chunk, or raise ValueError."""
+    if len(blob) < 33:
+        raise ValueError("file too short to be a PNG")
+    if blob[:8] != PNG_MAGIC:
+        raise ValueError("missing PNG signature")
+    if blob[12:16] != b"IHDR":
+        raise ValueError("first chunk is not IHDR")
+    width, height = struct.unpack(">II", blob[16:24])
+    return width, height
+
+
+def checked_bytes(blob):
+    width, height = png_dimensions(blob)
+    if (width, height) != (WANTED_W, WANTED_H):
+        raise ValueError(f"expected 1024x1024, got {width}x{height}")
+    if len(blob) > MAX_BYTES:
+        raise ValueError(f"file is {len(blob)} bytes, over the 1 MiB limit")
+    return blob
+
+
+def destination():
     override = os.environ.get("MAKEFUN_OUTPUT_DIR")
-    return Path(override) if override else Path("/output")
+    base = Path(override) if override else Path("/output")
+    return base / "entry.png"
 
 
-def load_image(repo_dir: Path) -> bytes:
-    source = repo_dir / IMAGE_NAME
-    data = source.read_bytes()
-    if len(data) > MAX_BYTES:
-        raise SystemExit(
-            f"{IMAGE_NAME} is {len(data)} bytes, over the 1 MiB limit"
-        )
-    if not data.startswith(PNG_MAGIC):
-        raise SystemExit(f"{IMAGE_NAME} does not start with a PNG signature")
-    if b"IEND" not in data[-12:]:
-        raise SystemExit(f"{IMAGE_NAME} does not end with an IEND chunk")
-    width, height = struct.unpack(">II", data[16:24])
-    if (width, height) != (1024, 1024):
-        raise SystemExit(f"expected 1024x1024, found {width}x{height}")
-    return data
+def fingerprint(blob):
+    return hashlib.sha256(blob).hexdigest()
 
 
-def main() -> int:
-    repo_dir = Path(__file__).resolve().parent
-    data = load_image(repo_dir)
-    out_dir = choose_output_dir()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    target = out_dir / IMAGE_NAME
-    target.write_bytes(data)
-    digest = hashlib.sha256(data).hexdigest()
-    print(f"wrote {target} ({len(data)} bytes, sha256 {digest})")
+def run():
+    source = read_source()
+    blob = checked_bytes(source.read_bytes())
+    target = destination()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(blob)
+    print(f"bytes={len(blob)} sha256={fingerprint(blob)}")
+    print(f"wrote {target}")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())
